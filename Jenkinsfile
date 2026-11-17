@@ -1,45 +1,80 @@
 pipeline {
     agent any
 
+    options {
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        IMAGE = 'boudourbouzid/monapp'
+        TAG = "build-${env.BUILD_NUMBER}"
+    }
+
     stages {
-        stage('Cloner le depot') {
+        stage('Checkout') {
             steps {
-                git url: 'https://github.com/bouzidboudour888-ship-it/jenkins-G02.git',
-                    branch: 'main'
+                checkout scm
             }
         }
 
-        stage('Verification du depot') {
+        stage('Docker Build') {
             steps {
-                bat 'git status'
+                bat 'docker version'
+                bat 'docker build -t %IMAGE%:%TAG% .'
             }
         }
 
-        stage('Afficher le contenu du projet') {
+        stage('Smoke Test') {
             steps {
-                bat 'dir'
+                bat(
+                    returnStatus: true,
+                    script: 'docker rm -f monapp_test'
+                )
+
+                bat 'docker run -d --name monapp_test -p 8081:80 %IMAGE%:%TAG%'
+
+                bat 'curl.exe --fail --retry 10 --retry-connrefused --retry-delay 2 http://localhost:8081/ -o NUL'
+            }
+
+            post {
+                always {
+                    bat(
+                        returnStatus: true,
+                        script: 'docker rm -f monapp_test'
+                    )
+                }
             }
         }
 
-        stage('Simuler un deploiement local') {
+        stage('Push Docker Hub') {
             steps {
-                bat 'echo Le fichier index.html est pret a etre affiche'
-            }
-        }
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-creds',
+                        usernameVariable: 'DOCKERHUB_USER',
+                        passwordVariable: 'DOCKERHUB_PASS'
+                    )
+                ]) {
+                    bat '''
+                        @echo off
+                        powershell -NoProfile -Command "$env:DOCKERHUB_PASS | docker login --username $env:DOCKERHUB_USER --password-stdin; exit $LASTEXITCODE"
+                    '''
 
-        stage('Fin du build') {
-            steps {
-                bat 'echo SUCCESS'
+                    bat 'docker tag %IMAGE%:%TAG% %IMAGE%:latest'
+                    bat 'docker push %IMAGE%:%TAG%'
+                    bat 'docker push %IMAGE%:latest'
+                }
             }
         }
     }
 
     post {
         success {
-            echo 'Build OK'
+            echo 'Build + Test + Push OK'
         }
+
         failure {
-            echo 'Build KO'
+            echo 'Build, test ou push en echec'
         }
     }
 }
